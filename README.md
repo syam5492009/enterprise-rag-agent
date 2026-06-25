@@ -61,7 +61,7 @@ This is **not a tutorial chatbot**. It's a production AI system built the way a 
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/enterprise-rag-agent
+git clone https://github.com/syam5492009/enterprise-rag-agent
 cd enterprise-rag-agent
 pip install -r requirements.txt
 ```
@@ -204,6 +204,6 @@ enterprise-rag-agent/
 
 **K. Syama Sundara Rao** — Senior Software Architect & AI Forward Deployed Engineer  
 📧 syam.5492009@gmail.com | Hyderabad, India  
-🔗 [LinkedIn](https://linkedin.com/in/syamsundararao) | [GitHub](https://github.com/syamsundararao)
+🔗 [LinkedIn](https://linkedin.com/in/syamsundararao) | [GitHub](https://github.com/syam5492009)
 
 > *"Most enterprise AI pilots fail at last-mile integration, not model quality. This project is built to solve exactly that."*

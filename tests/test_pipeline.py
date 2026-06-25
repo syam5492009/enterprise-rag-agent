@@ -143,8 +143,9 @@ def test_health_endpoint():
     """Health endpoint should return without connecting to Qdrant."""
     from fastapi.testclient import TestClient
 
-    # Patch out EnterpriseRouterAgent so the lifespan doesn't need Qdrant/OpenAI
-    with patch("src.api.main.EnterpriseRouterAgent") as mock_agent_cls:
+    # EnterpriseRouterAgent is imported lazily inside the lifespan function,
+    # so patch it at the source module, not on src.api.main.
+    with patch("src.agents.router.EnterpriseRouterAgent") as mock_agent_cls:
         mock_agent_cls.return_value = MagicMock()
         from src.api.main import app
         with TestClient(app) as client:
