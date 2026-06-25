@@ -1,0 +1,28 @@
+"""
+src/utils/config.py — Settings management via pydantic-settings
+"""
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+
+    # LangSmith — set these and every LLM call is automatically traced
+    LANGCHAIN_API_KEY: str = ""
+    LANGCHAIN_TRACING_V2: str = "true"
+    LANGCHAIN_PROJECT: str = "enterprise-rag-agent"
+
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_COLLECTION: str = "enterprise_kb"
+
+    # Optional: Confluence integration
+    CONFLUENCE_URL: str = ""
+    CONFLUENCE_USERNAME: str = ""
+    CONFLUENCE_API_KEY: str = ""
+
+    class Config:
+        env_file = ".env"
+
+
+settings = Settings()

@@ -1,0 +1,93 @@
+ACME Corp — Enterprise Knowledge Base
+======================================
+
+DATA RETENTION POLICY
+----------------------
+Customer PII must be retained for no longer than 7 years in compliance with
+GDPR Article 5(1)(e). Data older than 7 years must be anonymised or deleted
+within 30 days of the retention window closing. Healthcare-related records
+under HIPAA are subject to a 6-year minimum retention period.
+
+PRODUCTION DATABASE ACCESS
+--------------------------
+Access to the production database requires a formal access request submitted
+via the internal IT portal. Requests must be approved by both the team lead
+and the Security team. Temporary access is granted for a maximum of 48 hours
+and is automatically revoked. All queries against production are logged and
+audited quarterly.
+
+API GATEWAY SLA
+---------------
+The API gateway is covered by a 99.9% uptime SLA, equating to less than
+8.7 hours of downtime per year. P95 latency target is 200ms; P99 is 500ms.
+Violations trigger an automatic incident in PagerDuty (P2 severity).
+
+HOTFIX DEPLOYMENT PROCESS
+--------------------------
+Hotfixes bypass the standard two-week sprint cycle under the following
+conditions: critical production bug, data-loss risk, or security vulnerability.
+Steps:
+  1. Engineer opens a hotfix branch from main.
+  2. PR reviewed by one senior engineer within 2 hours.
+  3. Automated test suite must pass (no exceptions).
+  4. Deploy to staging, smoke-test for 15 minutes.
+  5. Deploy to production with on-call engineer monitoring dashboards.
+  6. Rollback plan documented before deployment begins.
+
+AWS REGIONS APPROVED FOR HEALTHCARE DATA
+-----------------------------------------
+HIPAA-compliant data may only be stored in the following AWS regions:
+  - us-east-1 (N. Virginia)
+  - us-west-2 (Oregon)
+  - eu-west-1 (Ireland)
+
+Other regions require a formal exception approved by the CISO and DPO.
+
+INCIDENT RESPONSE — P1 vs P2
+------------------------------
+P1 (Critical): Complete service outage or data breach.
+  - On-call engineer paged immediately.
+  - War room opened within 15 minutes.
+  - Customer communication within 30 minutes.
+  - Resolution target: 4 hours.
+
+P2 (High): Partial degradation, significant feature unavailable.
+  - On-call engineer paged within 5 minutes.
+  - Resolution target: 8 hours during business hours.
+  - Customer communication if impact > 100 users.
+
+JWT KEY ROTATION
+-----------------
+To rotate JWT signing keys without downtime, use the dual-key strategy:
+  1. Generate new key pair; add public key to the JWKS endpoint alongside old key.
+  2. Update the token issuer to sign with the new private key.
+  3. Allow a 15-minute overlap so in-flight tokens signed with the old key remain valid.
+  4. Remove the old public key from JWKS after the overlap window.
+  5. Revoke the old private key from the secrets manager.
+
+GDPR OBLIGATIONS — EU CUSTOMER DATA
+-------------------------------------
+When processing personal data of EU residents:
+  - Legal basis must be established (consent, contract, legitimate interest).
+  - Data Processing Agreement (DPA) required with all sub-processors.
+  - Data subjects have the right to access, rectify, and erase their data.
+  - Cross-border transfers outside EEA require SCCs or adequacy decision.
+  - Breach notification to supervisory authority within 72 hours.
+
+SECRETS MANAGEMENT
+-------------------
+API keys and credentials must NOT be stored in environment variables in
+production. Use HashiCorp Vault or AWS Secrets Manager. Environment variables
+are acceptable in local development only. Secrets must be rotated every 90 days.
+Violations are flagged by the quarterly security scan.
+
+NEW ENGINEER ONBOARDING — DAY ONE ACCESS
+-----------------------------------------
+On their first day, a new backend engineer should have:
+  - GitHub organisation membership (read access to all repos, write to team repos)
+  - AWS console access (dev environment only, read-only)
+  - Datadog read-only access for observability dashboards
+  - Slack onboarding channel added
+  - Jira project board access
+  - VPN credentials
+Production access requires a separate approval after the 90-day probation period.
