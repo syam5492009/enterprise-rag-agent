@@ -204,6 +204,6 @@ enterprise-rag-agent/
 
 **K. Syama Sundara Rao** — Senior Software Architect & AI Forward Deployed Engineer  
 📧 syam.5492009@gmail.com | Hyderabad, India  
-🔗 [LinkedIn](https://linkedin.com/in/syamsundararao) | [GitHub](https://github.com/syam5492009)
+🔗 [Portfolio](https://syamai.vercel.app/) | [LinkedIn](https://linkedin.com/in/syamsundar) | [GitHub](https://github.com/syam5492009)
 
 > *"Most enterprise AI pilots fail at last-mile integration, not model quality. This project is built to solve exactly that."*
