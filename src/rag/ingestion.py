@@ -42,7 +42,11 @@ class DocumentIngester:
     def __init__(self, collection_name: str = "enterprise_kb"):
         self.collection_name = collection_name
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-        self.qdrant_client = QdrantClient(url=settings.QDRANT_URL)
+        self.qdrant_client = (
+            QdrantClient(path=settings.QDRANT_PATH)
+            if settings.QDRANT_PATH
+            else QdrantClient(url=settings.QDRANT_URL)
+        )
         self._ensure_collection()
 
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -157,14 +161,13 @@ class DocumentIngester:
             logger.warning("No chunks to ingest")
             return 0
 
-        # Upsert to Qdrant via LangChain abstraction
-        QdrantVectorStore.from_documents(
-            documents=chunks,
-            embedding=self.embeddings,
-            url=settings.QDRANT_URL,
+        # Upsert using the existing client to avoid double-lock on local storage
+        vector_store = QdrantVectorStore(
+            client=self.qdrant_client,
             collection_name=self.collection_name,
-            force_recreate=False,
+            embedding=self.embeddings,
         )
+        vector_store.add_documents(chunks)
 
         logger.info("Ingested %d chunks into collection '%s'", len(chunks), self.collection_name)
         return len(chunks)

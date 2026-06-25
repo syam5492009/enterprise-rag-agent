@@ -70,7 +70,11 @@ class HybridRetriever:
         self.sparse_weight = sparse_weight
 
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-        self.qdrant_client = QdrantClient(url=settings.QDRANT_URL)
+        self.qdrant_client = (
+            QdrantClient(path=settings.QDRANT_PATH)
+            if settings.QDRANT_PATH
+            else QdrantClient(url=settings.QDRANT_URL)
+        )
 
         self._vector_store = QdrantVectorStore(
             client=self.qdrant_client,
