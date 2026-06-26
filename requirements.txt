@@ -21,6 +21,9 @@ docx2txt>=0.8
 # Reranking
 sentence-transformers>=3.4.0
 
+# Hybrid retrieval (BM25)
+rank_bm25>=0.2.2
+
 # API
 fastapi>=0.115.0
 uvicorn>=0.34.0

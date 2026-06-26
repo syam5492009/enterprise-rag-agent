@@ -13,19 +13,48 @@ now applied to a RAG context. The router decides:
 LangSmith traces the entire routing decision + subagent execution.
 """
 
-from typing import Annotated, TypedDict, Literal
+from typing import Annotated, TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 import logging
 
 from src.rag.pipeline import EnterpriseRAGPipeline
 from src.utils.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ── Keyword router (no LLM call — saves 1-2s per query) ──────────────────────
+
+_RAG_KEYWORDS = {
+    "policy", "policies", "procedure", "procedures", "retention", "compliance",
+    "regulation", "approved", "approval", "requirement", "requirements",
+    "guideline", "guidelines", "rule", "rules", "standard", "standards",
+    "security", "pii", "gdpr", "hipaa", "soc2", "encryption", "access",
+    "permission", "authentication", "authorization", "incident", "breach",
+    "aws", "region", "cloud", "backup", "storage", "vendor", "contract",
+    "onboarding", "offboarding", "data", "classification", "handling",
+}
+
+_SQL_KEYWORDS = {"how many", "count", "total", "average", "avg", "sum",
+                 "statistics", "metrics", "report", "trend", "percentage"}
+
+_MCP_KEYWORDS = {"jira", "confluence", "ticket", "issue #", "sprint",
+                 "kanban", "open ticket", "open issue"}
+
+
+def keyword_route(query: str) -> str:
+    """Route a query using keyword matching — zero LLM calls, ~0ms."""
+    q = query.lower()
+    if any(kw in q for kw in _MCP_KEYWORDS):
+        return "mcp"
+    if any(kw in q for kw in _SQL_KEYWORDS):
+        return "sql"
+    if any(kw in q for kw in _RAG_KEYWORDS):
+        return "rag"
+    return "direct"
 
 
 # ── State definition ──────────────────────────────────────────────────────────
@@ -38,23 +67,8 @@ class AgentState(TypedDict):
     final_answer: str
     sources: list[str]
     confidence: float
-
-
-# ── Router agent ──────────────────────────────────────────────────────────────
-
-ROUTER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are a query router for an enterprise AI system.
-    
-Classify the user query into exactly one category:
-
-- "rag": Questions about internal documentation, policies, procedures, architecture
-- "sql": Questions about data, metrics, counts, aggregations that need database queries  
-- "mcp": Questions about live system state — open JIRA tickets, Confluence pages, emails
-- "direct": Greetings, general knowledge, questions clearly outside the enterprise scope
-
-Respond with ONLY the category label, nothing else."""),
-    ("human", "Query: {query}")
-])
+    rewrite_query: bool
+    check_faithfulness: bool
 
 
 class EnterpriseRouterAgent:
@@ -68,7 +82,6 @@ class EnterpriseRouterAgent:
     def __init__(self):
         self.llm = ChatOpenAI(model=settings.OPENAI_MODEL, temperature=0)
         self.rag_pipeline = EnterpriseRAGPipeline()
-        self._router_chain = ROUTER_PROMPT | self.llm | StrOutputParser()
         self._graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
@@ -102,17 +115,9 @@ class EnterpriseRouterAgent:
         return graph.compile()
 
     def _route_query(self, state: AgentState) -> AgentState:
-        """Node: classify the query and set the route."""
-        query = state["query"]
-        route = self._router_chain.invoke({"query": query}).strip().lower()
-
-        # Validate route
-        valid_routes = {"rag", "sql", "mcp", "direct"}
-        if route not in valid_routes:
-            logger.warning("Invalid route '%s', defaulting to 'rag'", route)
-            route = "rag"
-
-        logger.info("Query routed to: %s", route)
+        """Node: classify the query using keyword matching (zero LLM calls)."""
+        route = keyword_route(state["query"])
+        logger.info("Query keyword-routed to: %s", route)
         return {**state, "route": route}
 
     def _dispatch(self, state: AgentState) -> str:
@@ -121,7 +126,11 @@ class EnterpriseRouterAgent:
 
     def _rag_agent(self, state: AgentState) -> AgentState:
         """Node: answer using the RAG pipeline."""
-        response = self.rag_pipeline.invoke(state["query"])
+        response = self.rag_pipeline.invoke(
+            state["query"],
+            rewrite_query=state.get("rewrite_query", True),
+            check_faithfulness=state.get("check_faithfulness", True),
+        )
         return {
             **state,
             "final_answer": response.answer,
@@ -161,14 +170,22 @@ class EnterpriseRouterAgent:
             "messages": state["messages"] + [AIMessage(content=answer)]
         }
 
-    def invoke(self, query: str, chat_history: list = None) -> dict:
+    def invoke(
+        self,
+        query: str,
+        chat_history: list = None,
+        rewrite_query: bool = True,
+        check_faithfulness: bool = True,
+    ) -> dict:
         """
         Run the full routing pipeline.
-        
+
         Args:
             query: User's question
             chat_history: Previous messages for context
-            
+            rewrite_query: Rewrite query before retrieval (saves ~1-2s if False)
+            check_faithfulness: Run LLM faithfulness guardrail (saves ~1-2s if False)
+
         Returns:
             dict with answer, sources, confidence, and route taken
         """
@@ -179,6 +196,8 @@ class EnterpriseRouterAgent:
             "final_answer": "",
             "sources": [],
             "confidence": 0.0,
+            "rewrite_query": rewrite_query,
+            "check_faithfulness": check_faithfulness,
         }
 
         final_state = self._graph.invoke(initial_state)
@@ -189,3 +208,30 @@ class EnterpriseRouterAgent:
             "confidence": final_state["confidence"],
             "route": final_state["route"],
         }
+
+    async def astream(
+        self,
+        query: str,
+        top_k: int = 5,
+        rewrite_query: bool = False,
+        check_faithfulness: bool = False,
+    ):
+        """
+        Stream tokens for a query. Yields SSE-ready dicts:
+          {"type": "token", "content": "..."}   — one per LLM token
+          {"type": "done",  "sources": [...], "confidence": ..., "route": "..."}
+        """
+        route = keyword_route(query)
+        logger.info("Stream query keyword-routed to: %s", route)
+
+        if route == "rag":
+            async for event in self.rag_pipeline.astream(
+                query, top_k=top_k, rewrite_query=rewrite_query,
+                check_faithfulness=check_faithfulness,
+            ):
+                yield event
+        else:
+            # Direct LLM — stream without retrieval
+            async for chunk in self.llm.astream([HumanMessage(content=query)]):
+                yield {"type": "token", "content": chunk.content}
+            yield {"type": "done", "sources": [], "confidence": 0.8, "route": route}

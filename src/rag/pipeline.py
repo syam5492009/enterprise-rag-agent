@@ -149,22 +149,32 @@ class EnterpriseRAGPipeline:
             logger.warning("Faithfulness check returned non-JSON: %s", result)
             return {"is_faithful": True, "confidence": 0.5, "reason": "parse error"}
 
-    def invoke(self, query: str, top_k: int = 5) -> RAGResponse:
+    def invoke(
+        self,
+        query: str,
+        top_k: int = 5,
+        rewrite_query: bool = True,
+        check_faithfulness: bool = True,
+    ) -> RAGResponse:
         """
         Full RAG pipeline invocation.
-        
+
         Steps:
-        1. Rewrite query for better retrieval
+        1. (Optional) Rewrite query for better retrieval
         2. Hybrid retrieval (semantic + BM25)
         3. Cross-encoder reranking
         4. Generate answer
-        5. Faithfulness validation
+        5. (Optional) Faithfulness validation
         """
         logger.info("RAG pipeline invoked: %s", query[:80])
 
-        # Step 1: Query rewriting
-        rewritten_query = self._query_rewriter.invoke({"query": query})
-        logger.info("Rewritten query: %s", rewritten_query)
+        # Step 1: Query rewriting (optional — skip to save ~1-2s)
+        if rewrite_query:
+            rewritten_query = self._query_rewriter.invoke({"query": query})
+            logger.info("Rewritten query: %s", rewritten_query)
+        else:
+            rewritten_query = query
+            logger.info("Query rewriting skipped")
 
         # Step 2: Hybrid retrieval
         docs = self.retriever.retrieve(rewritten_query, top_k=top_k * 2)
@@ -182,27 +192,91 @@ class EnterpriseRAGPipeline:
             "sources": ", ".join(sources)
         })
 
-        # Step 5: Faithfulness check (guardrail)
-        faithfulness = self._check_faithfulness(answer, context)
-        confidence = faithfulness.get("confidence", 0.8)
-        needs_review = not faithfulness.get("is_faithful", True) or confidence < 0.6
-
-        if needs_review:
-            logger.warning(
-                "Answer flagged for review. Faithful: %s, Confidence: %.2f",
-                faithfulness.get("is_faithful"),
-                confidence
-            )
+        # Step 5: Faithfulness check (optional — skip to save ~1-2s)
+        if check_faithfulness:
+            faithfulness = self._check_faithfulness(answer, context)
+            confidence = faithfulness.get("confidence", 0.8)
+            needs_review = not faithfulness.get("is_faithful", True) or confidence < 0.6
+            if needs_review:
+                logger.warning(
+                    "Answer flagged for review. Faithful: %s, Confidence: %.2f",
+                    faithfulness.get("is_faithful"),
+                    confidence,
+                )
+        else:
+            confidence = 0.8
+            needs_review = False
+            logger.info("Faithfulness check skipped")
 
         return RAGResponse(
             answer=answer,
             sources=sources,
             confidence=confidence,
             needs_human_review=needs_review,
-            query_rewritten=rewritten_query
+            query_rewritten=rewritten_query,
         )
 
     async def ainvoke(self, query: str, top_k: int = 5) -> RAGResponse:
         """Async version for FastAPI endpoints."""
         import asyncio
         return await asyncio.to_thread(self.invoke, query, top_k)
+
+    async def astream(
+        self,
+        query: str,
+        top_k: int = 5,
+        rewrite_query: bool = False,
+        check_faithfulness: bool = False,
+    ):
+        """
+        Async generator that streams LLM tokens then emits a final metadata event.
+        Yields dicts: {"type": "token", "content": "..."} then {"type": "done", ...}
+        """
+        import asyncio
+
+        # Retrieval runs in a thread (blocking I/O)
+        if rewrite_query:
+            rewritten_query = await asyncio.to_thread(
+                self._query_rewriter.invoke, {"query": query}
+            )
+            logger.info("Rewritten query: %s", rewritten_query)
+        else:
+            rewritten_query = query
+
+        docs = await asyncio.to_thread(self.retriever.retrieve, rewritten_query, top_k * 2)
+        reranked_docs = await asyncio.to_thread(self.reranker.rerank, rewritten_query, docs, top_k)
+
+        context = format_docs(reranked_docs)
+        sources = extract_sources(reranked_docs)
+
+        # Stream generation tokens
+        chain = RAG_PROMPT | self.llm.with_config({"run_name": "rag_generator"})
+        full_answer = []
+        async for chunk in chain.astream({
+            "context": context,
+            "question": query,
+            "sources": ", ".join(sources),
+        }):
+            token = chunk.content
+            if token:
+                full_answer.append(token)
+                yield {"type": "token", "content": token}
+
+        # Faithfulness check after full answer is assembled (optional)
+        if check_faithfulness:
+            faithfulness = await asyncio.to_thread(
+                self._check_faithfulness, "".join(full_answer), context
+            )
+            confidence = faithfulness.get("confidence", 0.8)
+            needs_review = not faithfulness.get("is_faithful", True) or confidence < 0.6
+        else:
+            confidence = 0.8
+            needs_review = False
+
+        yield {
+            "type": "done",
+            "sources": sources,
+            "confidence": confidence,
+            "needs_human_review": needs_review,
+            "route": "rag",
+        }

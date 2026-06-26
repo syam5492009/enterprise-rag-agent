@@ -152,6 +152,11 @@ python scripts/ingest.py --source /path/to/your/docs --collection enterprise_kb
 python scripts/ingest.py --source ./docs --dry-run
 ```
 
+> **Important:** Local file Qdrant uses an exclusive file lock — only one process
+> can access `qdrant_data/` at a time. Stop the API server before running
+> ingestion, then restart it. For concurrent access (ingest while server runs),
+> use Docker Qdrant server mode (see below).
+
 > First run downloads the `cross-encoder/ms-marco-MiniLM-L-6-v2` model (~85 MB)
 > from Hugging Face. Subsequent runs use the cached copy.
 
@@ -169,21 +174,47 @@ Open [http://localhost:8001/docs](http://localhost:8001/docs) for the interactiv
 
 ### 5. Query the agent
 
+**Standard (full response):**
 ```bash
 curl -X POST http://localhost:8001/query \
   -H "Content-Type: application/json" \
   -d '{"query": "What is the data retention policy for customer PII?", "top_k": 5}'
 ```
 
-Expected response:
+Response:
 ```json
 {
-  "answer": "Customer PII must be retained for 7 years per regulatory requirements ...",
+  "answer": "Customer PII must be retained for no longer than 7 years per GDPR Article 5(1)(e)...",
   "sources": ["sample_policy.txt"],
   "confidence": 1.0,
   "route": "rag",
-  "needs_human_review": false
+  "needs_human_review": false,
+  "latency_ms": 5456.8,
+  "session_id": "e2a66375-bcd9-4557-926d-b37f846b39ec"
 }
+```
+
+**Streaming (first token in ~300ms):**
+```bash
+curl -X POST http://localhost:8001/query/stream \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the data retention policy for customer PII?", "top_k": 5}'
+```
+
+Streaming response (Server-Sent Events):
+```
+data: {"type": "token", "content": "Customer"}
+data: {"type": "token", "content": " PII"}
+data: {"type": "token", "content": " must"}
+...
+data: {"type": "done", "sources": ["sample_policy.txt"], "confidence": 0.8, "latency_ms": 2341}
+```
+
+**Windows PowerShell:**
+```powershell
+Invoke-RestMethod -Uri http://localhost:8001/query -Method POST `
+  -ContentType "application/json" `
+  -Body '{"query": "What is the data retention policy for customer PII?", "top_k": 5}'
 ```
 
 ---
@@ -214,31 +245,71 @@ docker run -p 6333:6333 qdrant/qdrant
 }
 ```
 
+---
+
 ### `POST /query`
 
-Routes the query to the best agent (RAG, MCP, or direct LLM).
+Full blocking response. Routes query via keyword matching (no LLM routing call).
 
 **Request:**
 ```json
 {
   "query": "What are the approved AWS regions for healthcare data?",
   "session_id": "optional-session-id",
-  "top_k": 5
+  "top_k": 5,
+  "rewrite_query": true,
+  "check_faithfulness": true
 }
 ```
+
+| Field | Default | Description |
+|---|---|---|
+| `query` | required | The user question |
+| `top_k` | `5` | Number of documents to retrieve (1–20) |
+| `rewrite_query` | `true` | Rewrite query before retrieval — saves ~1.5s if `false` |
+| `check_faithfulness` | `true` | LLM-as-judge guardrail — saves ~1.5s if `false` |
 
 **Response:**
 ```json
 {
-  "answer": "HIPAA-compliant data may only be stored in us-east-1 (N. Virginia), us-west-2 (Oregon), and eu-west-1 (Ireland). Other regions require a formal exception approved by the CISO and DPO.",
+  "answer": "HIPAA-compliant data may only be stored in us-east-1, us-west-2, and eu-west-1...",
   "sources": ["sample_policy.txt"],
   "confidence": 1.0,
   "route": "rag",
   "needs_human_review": false,
+  "latency_ms": 5456.8,
   "trace_url": null,
   "session_id": "e2a66375-bcd9-4557-926d-b37f846b39ec"
 }
 ```
+
+---
+
+### `POST /query/stream`
+
+Streaming response using Server-Sent Events. First token arrives in ~300ms.
+Accepts the same request body as `/query`.
+
+```
+data: {"type": "token",   "content": "HIPAA-compliant"}
+data: {"type": "token",   "content": " data"}
+...
+data: {"type": "done",    "sources": ["sample_policy.txt"], "confidence": 0.8,
+       "route": "rag",    "needs_human_review": false, "latency_ms": 2341,
+       "session_id": "..."}
+data: {"type": "error",   "message": "..."}   ← only on failure
+```
+
+---
+
+### Latency Guide
+
+| Configuration | Approx Latency | Use When |
+|---|---|---|
+| `rewrite_query=true, check_faithfulness=true` | ~6s | Max accuracy, compliance use cases |
+| `rewrite_query=false, check_faithfulness=true` | ~4s | Balanced |
+| `rewrite_query=false, check_faithfulness=false` | ~2.5s | Speed-sensitive apps |
+| `/query/stream` (any config) | ~300ms first token | User-facing chat interfaces |
 
 **Route values:**
 

@@ -8,9 +8,12 @@ Production-ready with async endpoints, health checks, and LangSmith trace IDs.
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional
+import json
 import logging
+import time
 import uuid
 
 from src.utils.config import settings
@@ -55,6 +58,8 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000, description="User question")
     session_id: Optional[str] = Field(None, description="Session ID for conversation context")
     top_k: Optional[int] = Field(5, ge=1, le=20, description="Number of documents to retrieve")
+    rewrite_query: bool = Field(True, description="Rewrite query before retrieval (saves ~1-2s if disabled)")
+    check_faithfulness: bool = Field(True, description="Run LLM faithfulness guardrail (saves ~1-2s if disabled)")
 
 
 class QueryResponse(BaseModel):
@@ -63,6 +68,7 @@ class QueryResponse(BaseModel):
     confidence: float
     route: str
     needs_human_review: bool
+    latency_ms: float
     trace_url: Optional[str] = None
     session_id: str
 
@@ -106,10 +112,14 @@ async def query_endpoint(request: QueryRequest):
     session_id = request.session_id or str(uuid.uuid4())
 
     try:
+        t0 = time.perf_counter()
         result = _agent.invoke(
             query=request.query,
-            chat_history=[],  # TODO: load from session store
+            chat_history=[],
+            rewrite_query=request.rewrite_query,
+            check_faithfulness=request.check_faithfulness,
         )
+        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
 
         confidence = result.get("confidence", 0.8)
         return QueryResponse(
@@ -118,6 +128,7 @@ async def query_endpoint(request: QueryRequest):
             confidence=confidence,
             route=result.get("route", "unknown"),
             needs_human_review=confidence < 0.6,
+            latency_ms=latency_ms,
             trace_url=None,  # LangSmith URL populated server-side
             session_id=session_id,
         )
@@ -125,6 +136,41 @@ async def query_endpoint(request: QueryRequest):
     except Exception as e:
         logger.error("Query failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+
+
+@app.post("/query/stream")
+async def query_stream_endpoint(request: QueryRequest):
+    """
+    Streaming query endpoint using Server-Sent Events (SSE).
+    Uses keyword routing (no LLM call) so first token arrives in ~300ms.
+
+    SSE event format:
+      data: {"type": "token", "content": "..."}   — one per token
+      data: {"type": "done",  "sources": [...], "confidence": 1.0, "latency_ms": 1234}
+    """
+    if _agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+
+    session_id = request.session_id or str(uuid.uuid4())
+
+    async def generate():
+        t0 = time.perf_counter()
+        try:
+            async for event in _agent.astream(
+                query=request.query,
+                top_k=request.top_k,
+                rewrite_query=request.rewrite_query,
+                check_faithfulness=request.check_faithfulness,
+            ):
+                if event["type"] == "done":
+                    event["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+                    event["session_id"] = session_id
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            logger.error("Stream failed: %s", e, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.post("/feedback")
