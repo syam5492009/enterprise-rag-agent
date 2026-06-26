@@ -71,55 +71,101 @@ Documents (PDF / DOCX / TXT / Confluence)
 
 ## Quick Start
 
+> **No Docker required.** Uses local file-based Qdrant storage out of the box.
+
 ### 1. Clone & install
 
 ```bash
 git clone https://github.com/syam5492009/enterprise-rag-agent
 cd enterprise-rag-agent
-pip install -r requirements.txt
 ```
+
+**Create a virtual environment (recommended):**
+
+```bash
+# Mac / Linux
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Windows (PowerShell)
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+
+# Windows (Command Prompt)
+python -m venv .venv
+.venv\Scripts\activate.bat
+```
+
+**Install all dependencies:**
+
+```bash
+pip install -r requirements.txt
+pip install -e .          # makes 'src' importable — run this once
+```
+
+> `pip install -e .` registers the `src/` package locally. After this, all
+> commands work as-is — no `PYTHONPATH` prefix needed on any platform.
+
+---
 
 ### 2. Configure
 
 ```bash
+# Mac / Linux
 cp .env.example .env
+
+# Windows (PowerShell)
+Copy-Item .env.example .env
 ```
 
-Edit `.env`:
+Open `.env` and fill in your values:
 
 ```env
+# Required
 OPENAI_API_KEY=sk-...
 
-# Run without Docker — uses local file-based Qdrant storage
+# No Docker needed — stores vectors in a local folder
 QDRANT_PATH=./qdrant_data
 
-# Optional: LangSmith tracing
-LANGCHAIN_API_KEY=ls__...
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_PROJECT=enterprise-rag-agent
+# Optional: LangSmith tracing (get key at smith.langchain.com)
+# LANGCHAIN_API_KEY=ls__...
+# LANGCHAIN_TRACING_V2=true
+# LANGCHAIN_PROJECT=enterprise-rag-agent
 
-# Optional: Docker/server Qdrant (comment out QDRANT_PATH)
+# Optional: use a running Qdrant server instead of local files
+# (comment out QDRANT_PATH and uncomment this)
 # QDRANT_URL=http://localhost:6333
 ```
+
+---
 
 ### 3. Ingest documents
 
 ```bash
-# Ingest sample policy doc (included)
+# Ingest the included sample policy document
 python scripts/ingest.py --source ./docs --collection enterprise_kb
 
-# Ingest your own docs
+# Ingest your own folder of PDFs / DOCX / TXT
 python scripts/ingest.py --source /path/to/your/docs --collection enterprise_kb
 
-# Dry run — see chunks without ingesting
+# Dry run — preview chunks without writing to Qdrant
 python scripts/ingest.py --source ./docs --dry-run
 ```
+
+> First run downloads the `cross-encoder/ms-marco-MiniLM-L-6-v2` model (~85 MB)
+> from Hugging Face. Subsequent runs use the cached copy.
+
+---
 
 ### 4. Start the API
 
 ```bash
-PYTHONPATH=. uvicorn src.api.main:app --reload --port 8001
+uvicorn src.api.main:app --reload --port 8001
 ```
+
+Open [http://localhost:8001/docs](http://localhost:8001/docs) for the interactive Swagger UI.
+
+---
 
 ### 5. Query the agent
 
@@ -129,17 +175,28 @@ curl -X POST http://localhost:8001/query \
   -d '{"query": "What is the data retention policy for customer PII?", "top_k": 5}'
 ```
 
+Expected response:
+```json
+{
+  "answer": "Customer PII must be retained for 7 years per regulatory requirements ...",
+  "sources": ["sample_policy.txt"],
+  "confidence": 1.0,
+  "route": "rag",
+  "needs_human_review": false
+}
+```
+
 ---
 
 ## Running with Docker (Qdrant server mode)
 
-If you have Docker, you can run Qdrant as a server instead of local file mode:
+If you prefer a running Qdrant server instead of local file mode:
 
 ```bash
-# Start Qdrant
+# Start Qdrant server
 docker run -p 6333:6333 qdrant/qdrant
 
-# Remove QDRANT_PATH from .env and set:
+# In your .env, comment out QDRANT_PATH and set:
 # QDRANT_URL=http://localhost:6333
 ```
 
@@ -272,6 +329,7 @@ enterprise-rag-agent/
 │   └── workflows/
 │       └── evals.yml            # CI/CD eval pipeline
 ├── .env.example
+├── pyproject.toml           # editable install — makes src/ importable
 ├── requirements.txt
 └── README.md
 ```
